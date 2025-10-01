@@ -9,7 +9,6 @@ venv/
 .env/
 .env.*
 
-uv.lock
 .uv/
 .uv-config/
 
@@ -28,4 +27,4 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
-datalake/
+datalake/*
