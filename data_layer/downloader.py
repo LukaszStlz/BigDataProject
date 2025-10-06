@@ -5,8 +5,7 @@ import asyncio
 import aiohttp
 import aiofile
 
-
-DATALAKE_PATH = "/app/datalake"
+from consts import DATALAKE_PATH
 
 def header_body_split(text):
     START_MARKER = "*** START OF THE PROJECT GUTENBERG EBOOK"
@@ -17,24 +16,28 @@ def header_body_split(text):
 
     return header, body
 
-def download_books(urls):
+def download_books(urls, out_dir=DATALAKE_PATH):
     sema = asyncio.BoundedSemaphore(5)
 
     async def fetch_file(session, url):
         fname = url.split("/")[-1]
+        book_id = fname.split('.')[0]
+
+        # Check if book already exists
+        h_path = os.path.join(out_dir, f'header_{book_id}.txt')
+        b_path = os.path.join(out_dir, f'body_{book_id}.txt')
+
+        if os.path.exists(h_path) and os.path.exists(b_path):
+            print(f'Book {book_id} already downloaded, skipping')
+            return
+
+        print(f'Downloading book {book_id}...')
         async with sema:
             async with session.get(url) as resp:
                 assert resp.status == 200
                 data = await resp.read()
 
-        main_dir_path = os.path.join(DATALAKE_PATH, f"{datetime.now().year}{datetime.now().strftime('%m')}{datetime.now().strftime('%d')}")
-        sub_dir_path = os.path.join(main_dir_path, f'{datetime.now().strftime('%I')}') 
-        
-        os.makedirs(main_dir_path, exist_ok=True) # blocking op for now
-        os.makedirs(sub_dir_path, exist_ok=True) # blocking op for now
-
-        h_path = os.path.join(sub_dir_path, f'{fname.split('.')[0]}_header.txt')
-        b_path = os.path.join(sub_dir_path, f'{fname.split('.')[0]}_body.txt')
+        os.makedirs(out_dir, exist_ok=True)
 
         header, body = header_body_split(data.decode('utf-8'))
 
@@ -48,9 +51,3 @@ def download_books(urls):
             await asyncio.gather(*tasks)
 
     asyncio.run(main())
-
-urls = [
-        "https://www.gutenberg.org/cache/epub/1342/pg1342.txt",
-        ]
-
-download_books(urls)
