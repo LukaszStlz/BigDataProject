@@ -17,11 +17,9 @@ def run_pipeline(backend_name='redis'):
 
     print(f'Starting pipeline with {backend_name} backend...')
 
-    # Download books
     download_books(urls)
     print('Book database updated.')
 
-    # Initialize backend
     if backend_name.lower() == 'redis':
         backend = RedisBackend()
         print('Using Redis datamart')
@@ -32,7 +30,6 @@ def run_pipeline(backend_name='redis'):
         print(f'Unknown backend: {backend_name}. Using Redis as default.')
         backend = RedisBackend()
 
-    # Test connection
     indexer = Indexer(backend)
     if not indexer.test_backend_connection():
         print(f'Failed to connect to {backend_name} backend!')
@@ -47,24 +44,11 @@ def run_pipeline(backend_name='redis'):
     print(f'Total books indexed: {stats["total_books"]}')
     print(f'Unique words: {stats["unique_words"]}')
 
-    # Quick search test
-    print('\n--- Quick Search Test ---')
-    results = indexer.search_books("adventure")
-    print(f'Books with "adventure": {len(results)}')
-    if results:
-        for book_id in results[:3]:  # Show first 3 results
-            book_info = indexer.get_book_info(book_id)
-            print(f'  - {book_id}: {book_info.get("title", "Unknown")[:50]}...')
-
-    return True
-
 if __name__ == '__main__':
-    # Check command line arguments
-    backend = 'redis'  # default
+    backend = 'redis'
     if len(sys.argv) > 1:
         backend = sys.argv[1]
 
-    # Check environment variable
     backend = os.getenv('BACKEND_TYPE', backend)
 
     print(f'Running pipeline with backend: {backend}')
