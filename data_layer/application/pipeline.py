@@ -1,6 +1,6 @@
-from downloader import download_books
-from indexer import Indexer
-from storage_backends import RedisBackend, PostgreSQLBackend
+from .downloader import download_books
+from .indexer import Indexer
+from .storage_backends import RedisBackend, PostgreSQLBackend
 import sys
 import os
 

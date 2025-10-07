@@ -8,6 +8,7 @@ import pytest
 import sys
 import os
 sys.path.append('/app')
+sys.path.append('/app/application')
 
 from storage_backends import RedisBackend, PostgreSQLBackend
 from indexer import Indexer

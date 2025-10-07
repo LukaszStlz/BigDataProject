@@ -50,7 +50,7 @@ services:
       - ./data_layer/datalake:/app/datalake
     environment:
       - BACKEND_TYPE=${BACKEND_TYPE:-postgres}
-    command: python pipeline.py
+    command: python -m application.pipeline
     # restart: unless-stopped
     networks:
       - default

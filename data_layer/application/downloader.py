@@ -5,7 +5,7 @@ import asyncio
 import aiohttp
 import aiofile
 
-from consts import DATALAKE_PATH
+from .consts import DATALAKE_PATH
 
 def header_body_split(text):
     START_MARKER = "*** START OF THE PROJECT GUTENBERG EBOOK"

@@ -10,6 +10,7 @@ import os
 import psutil
 import time
 sys.path.append('/app')
+sys.path.append('/app/application')
 
 from storage_backends import RedisBackend, PostgreSQLBackend
 from indexer import Indexer

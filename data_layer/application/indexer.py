@@ -3,7 +3,7 @@ import os
 import time
 from typing import Set, Dict, List
 from pathlib import Path
-from storage_backends import StorageBackend
+from .storage_backends import StorageBackend
 
 class Indexer:
     def __init__(self, backend: StorageBackend):
