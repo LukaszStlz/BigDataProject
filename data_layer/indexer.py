@@ -1,144 +1,158 @@
-import redis
 import re
-import os
-import time
-from typing import Set, Dict, List
 from pathlib import Path
+from typing import Set, Dict, List, Iterable
+
+import redis
+from consts import DATALAKE_PATH
+
 
 class Indexer:
-    def __init__(self, redis_host='redis', redis_port=6379):
-        self.redis_client = redis.Redis(host=redis_host, decode_responses=True)
-        self.datalake_path = Path('/app/datalake')
+    """
+    Builds a simple inverted index in Redis.
+    Keys:
+      - book:{id}:metadata -> hash(title, word_count, unique_words)
+      - word:{term}        -> set(book_id, ...)
+      - title_word:{term}  -> set(book_id, ...)
+      - stats:all_words    -> set(all unique terms)
+      - stats:indexed_books-> set(book_id, ...)
+    """
 
+    def __init__(self, redis_host: str = "redis", redis_port: int = 6379):
+        self.redis = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+        self.datalake = Path(DATALAKE_PATH)
+
+    # -----------------------
+    # Helpers
+    # -----------------------
     def tokenize_text(self, text: str) -> Set[str]:
-        '''extract words, normalize to lowercase, remove punctuaction'''
-        words = re.findall(r'\b[a-zA-Z]+\b', text.lower())
-        return set(word for word in words if len(word) > 2)
+        # keep only alphabetic tokens, lowercase, length > 2
+        words = re.findall(r"\b[a-zA-Z]+\b", text.lower())
+        return {w for w in words if len(w) > 2}
 
-    def is_book_indexed(self, book_id: str) -> bool:
-        '''check if book is already indexed'''
-        return self.redis_client.exists(f'book:{book_id}:metadata') > 0
+    def _iter_books(self) -> Iterable[tuple[str, Path, Path]]:
+        """
+        Yield unique (book_id, header_path, body_path) triples from the datalake.
+        We:
+          - find all *.header.txt files
+          - parse book_id strictly from the filename (NNN.header.txt)
+          - pick only one (latest) occurrence per book_id if there are duplicates across hours
+          - require that the matching body file exists
+        """
+        headers = sorted(
+            self.datalake.glob("**/*.header.txt"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,  # latest first
+        )
+        seen: Set[str] = set()
+
+        for header in headers:
+            m = re.match(r"^(\d+)\.header\.txt$", header.name)
+            if not m:
+                continue
+            bid = m.group(1)
+            if bid in seen:
+                continue
+            body = header.with_name(f"{bid}.body.txt")
+            if not body.exists():
+                continue
+            seen.add(bid)
+            yield bid, header, body
 
     def get_indexed_books(self) -> Set[str]:
-        '''get all indexed books IDs'''
-        pattern = 'book:*:metadata'
-        keys = self.redis_client.keys(pattern)
-        return {key.split(':')[1] for key in keys}
+        # Redis KEYS scan for already indexed metadata
+        keys = self.redis.keys("book:*:metadata")
+        return {k.split(":")[1] for k in keys}
 
-    def process_book(self, book_id: str) -> Dict:
-        '''pricess single book and return indexing data'''
-        header_file = self.datalake_path / f'header_{book_id}.txt'
-        body_file = self.datalake_path / f'body_{book_id}.txt'
+    def is_book_indexed(self, book_id: str) -> bool:
+        return self.redis.exists(f"book:{book_id}:metadata") > 0
 
-        if not header_file.exists() or not body_file.exists():
-            raise FileNotFoundError(f'Missing files for book {book_id}')
+    # -----------------------
+    # Core
+    # -----------------------
+    def process_book(self, book_id: str, header_file: Path, body_file: Path) -> Dict:
+        header_content = header_file.read_text(encoding="utf-8", errors="ignore").strip()
+        body_content = body_file.read_text(encoding="utf-8", errors="ignore")
 
-        with open(header_file, 'r', encoding='utf-8') as f:
-            header_content = f.read().strip()
-
-        with open(body_file, 'r', encoding='utf-8') as f:
-            body_content = f.read()
-
-        all_words = self.tokenize_text(header_content + ' ' + body_content)
+        all_words = self.tokenize_text(header_content + " " + body_content)
         title_words = self.tokenize_text(header_content)
 
         return {
-            'book_id': book_id,
-            'title': header_content,
-            'all_words': all_words,
-            'title_words': title_words,
-            'word_count': len(body_content.split())
+            "book_id": book_id,
+            # Stage 1: we keep whole header as title placeholder; Stage 2 can parse true Title/Author
+            "title": header_content,
+            "all_words": all_words,
+            "title_words": title_words,
+            "word_count": len(body_content.split()),
         }
 
-    def index_book(self, book_data: Dict):
-        '''index a single book, puts to redis - inverted index creation'''
-        pipe = self.redis_client.pipeline()
-        book_id = book_data['book_id']
+    def index_book(self, book_data: Dict) -> None:
+        bid = book_data["book_id"]
+        pipe = self.redis.pipeline()
 
-        pipe.hset(f'book:{book_id}:metadata', mapping={
-            'title': book_data['title'],
-            'word_count': str(book_data['word_count']),
-            'unique_words': str(len(book_data['all_words'])),
-            'indexed_at': str(int(time.time()))
-        })
+        
+        pipe.hset(
+            f"book:{bid}:metadata",
+            mapping={
+                "title": book_data["title"],
+                "word_count": str(book_data["word_count"]),
+                "unique_words": str(len(book_data["all_words"])),
+            },
+        )
 
-        for word in book_data['all_words']:
-            pipe.sadd(f'word:{word}', book_id)
+      
+        for w in book_data["all_words"]:
+            pipe.sadd(f"word:{w}", bid)
+        for w in book_data["title_words"]:
+            pipe.sadd(f"title_word:{w}", bid)
 
-        for word in book_data['title_words']:
-            pipe.sadd(f'title_word:{word}', book_id)
-
-        pipe.incr('stats:total_books')
-        pipe.sadd('stats:all_words', *book_data['all_words'])
+       
+        if book_data["all_words"]:
+            pipe.sadd("stats:all_words", *list(book_data["all_words"]))
+        pipe.sadd("stats:indexed_books", bid)
 
         pipe.execute()
 
-    def index_all_books(self, force_reindex: bool = False):
-        '''index all books, reindex if specified'''
-        book_files = list(self.datalake_path.glob('header_*.txt'))
-        book_ids = [f.stem.replace('header_', '') for f in book_files]
+    def index_all_books(self, force_reindex: bool = False) -> None:
+        indexed = self.get_indexed_books()
+        to_index: List[tuple[str, Path, Path]] = []
 
-        if not force_reindex:
-            indexed_books = self.get_indexed_books()
-            books_to_index = [bid for bid in book_ids if bid not in indexed_books]
-            skipped_count = len(book_ids) - len(books_to_index)
+        for bid, h, b in self._iter_books():
+            if force_reindex or (bid not in indexed):
+                to_index.append((bid, h, b))
 
-            print(f'Found {len(book_ids)} books total')
-            print(f'Skipping {skipped_count} already indexed')
-
-            print(f'Indexing {len(books_to_index)} new books')
-        else:
-            books_to_index = book_ids
-            print(f'Force reindexing all {len(book_ids)} books')
-
-        if not books_to_index:
-            print(f'No new books to index!!')
+        if not to_index:
+            print("[INDEXER] No new books to index.")
             return
 
-        for i, book_id in enumerate(books_to_index, 1):
+        print(f"[INDEXER] Indexing {len(to_index)} book(s)")
+        for i, (bid, h, b) in enumerate(to_index, 1):
             try:
-                book_data = self.process_book(book_id)
-                self.index_book(book_data)
-                print(f'Indexed book {i}/{len(books_to_index)}: {book_id}')
+                data = self.process_book(bid, h, b)
+                self.index_book(data)
+                print(f"[INDEXER] {i}/{len(to_index)} indexed: {bid}")
             except Exception as e:
-                print(f'Error indexing book {book_id}: {e}')
+                print(f"[INDEXER] Error on {bid}: {e}")
 
-        print('Indexing complete!')
-
+    
     def search_books(self, query: str) -> List[str]:
-        '''search for books containing query'''
         words = self.tokenize_text(query)
         if not words:
             return []
-
-        book_sets = [self.redis_client.smembers(f'word:{word}') for word in words]
-        if not book_sets:
+        sets = [self.redis.smembers(f"word:{w}") for w in words]
+        if not sets:
             return []
-
-        result_books = set(book_sets[0])
-        for book_set in book_sets[1:]:
-            result_books &= book_set
-
-        return list(result_books)
+        res = set(sets[0])
+        for s in sets[1:]:
+            res &= s
+        return sorted(res)
 
     def get_book_info(self, book_id: str) -> Dict:
-        '''gives book metadata'''
-        return self.redis_client.hgetall(f'book:{book_id}:metadata')
+        return self.redis.hgetall(f"book:{book_id}:metadata")
 
     def get_stats(self) -> Dict:
-        '''gives indexing statistics'''
+        
         return {
-            'total_books': self.redis_client.get('stats:total_books') or 0,
-            'unique_words': self.redis_client.scard('stats:all_words'),
-            'indexed_books': len(self.get_indexed_books())
+            "total_books": self.redis.scard("stats:indexed_books"),
+            "unique_words": self.redis.scard("stats:all_words"),
+            "indexed_books": len(self.get_indexed_books()),
         }
-
-    # to be moved elsewhere
-    def test_redis_connection(self):
-        try:
-            self.redis_client.ping()
-            print(f'Redis connection: OK')
-            return True
-        except:
-            print('Redis connection: FAILED')
-            return False

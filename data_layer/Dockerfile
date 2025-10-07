@@ -1,31 +1,39 @@
-FROM python:3.11-slim AS builder
 
+FROM python:3.11-slim AS builder
 WORKDIR /app
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY .. /app
 
-COPY pyproject.toml uv.lock ./
+WORKDIR /app/data_layer
 
-ENV UV_LINK_MODE=copy
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv uv lock
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked
 
-COPY . .
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked
 
 FROM python:3.11-slim
-
 WORKDIR /app
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip libfreetype6-dev libpng-dev fontconfig && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY --from=builder /app /app
 
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONUNBUFFERED=1
 
-CMD ["uv", "run", "pipeline.py"]
+ENV PATH="/app/data_layer/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
 
+
+RUN pip install --no-cache-dir matplotlib pytest pytest-benchmark aiohttp
+
+
+RUN python -c "import matplotlib, aiohttp; print(' matplotlib', matplotlib.__version__, '| aiohttp OK')"
+
+RUN mkdir -p /app/datalake /app/datamarts /app/control
+
+CMD ["uv", "run", "data_layer/pipeline.py"]

@@ -1,0 +1,20 @@
+=== BENCHMARK SUMMARY ===
+
+[index_build]
+  Avg time: 69.9 ms
+  Fastest: test_build_index_redis (69.9 ms)
+  Slowest: test_build_index_redis (69.9 ms)
+  Δ Slowest/Fastest: 0.0%
+
+[query]
+  Avg time: 2.9 ms
+  Fastest: test_query_word_redis (0.1 ms)
+  Slowest: test_sqlite_query[Author 3] (6.9 ms)
+  Δ Slowest/Fastest: 6010.6%
+
+[bulk_upsert]
+  Avg time: 33.6 ms
+  Fastest: test_mysql_bulk (8.1 ms)
+  Slowest: test_sqlite_bulk (84.0 ms)
+  Δ Slowest/Fastest: 934.5%
+

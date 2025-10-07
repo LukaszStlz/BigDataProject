@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   redis:
     image: redis:7
@@ -7,22 +9,58 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --dir /data
-    # restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mysql:
+    image: mysql:8.4
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: bigdata_stage1
+      MYSQL_USER: appuser
+      MYSQL_PASSWORD: apppass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uappuser", "-papppass"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   app:
-    build: ./data_layer
+    build:
+      context: .
+      dockerfile: data_layer/Dockerfile
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    environment:
+      INVERTED_VERBOSE: "1"
+      INVERTED_SKIP_HIER: "1"
+      INVERTED_MAX_TERMS: "3000"
+      PYTHONUNBUFFERED: "1"
+
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      MYSQL_HOST: "mysql"
+      MYSQL_PORT: "3306"
+      MYSQL_DB: "bigdata_stage1"
+      MYSQL_USER: "appuser"
+      MYSQL_PASSWORD: "apppass"
     volumes:
       - ./datalake:/app/datalake
-    # restart: unless-stopped
-    networks:
-      - default
+      - ./datamarts:/app/datamarts
+      - ./control:/app/control
+      - ./.benchmarks:/app/.benchmarks
 
 volumes:
   redis_data:
-    driver: local
-
-networks:
-  default:
-    driver: bridge
+  mysql_data:
