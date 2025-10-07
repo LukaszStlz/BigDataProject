@@ -1,31 +1,36 @@
+# FROM python:3.11-slim
+#
+# WORKDIR /app
+#
+# COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# COPY pyproject.toml uv.lock ./
+#
+# ENV UV_NO_CACHE=1
+# ENV UV_LINK_MODE=copy
+# ENV UV_SYNC_ALWAYS=1
+#
+# RUN rm -rf /root/.cache/uv && uv pip install --system -r <(uv pip compile pyproject.toml)
+#
+# COPY . .
+#
+# CMD ["uv", "run", "pipeline.py"]
+#
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
 COPY pyproject.toml uv.lock ./
 
+ENV UV_NO_CACHE=1
 ENV UV_LINK_MODE=copy
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-install-project
+RUN rm -rf /root/.cache/uv \
+    && uv lock \
+    && uv pip compile pyproject.toml -o requirements.txt \
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked
-
-FROM python:3.11-slim
-
-WORKDIR /app
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-COPY --from=builder /app /app
-
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONUNBUFFERED=1
 
 CMD ["uv", "run", "pipeline.py"]
 

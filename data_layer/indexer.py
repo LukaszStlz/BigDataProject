@@ -1,13 +1,13 @@
-import redis
 import re
 import os
 import time
 from typing import Set, Dict, List
 from pathlib import Path
+from storage_backends import StorageBackend
 
 class Indexer:
-    def __init__(self, redis_host='redis', redis_port=6379):
-        self.redis_client = redis.Redis(host=redis_host, decode_responses=True)
+    def __init__(self, backend: StorageBackend):
+        self.backend = backend
         self.datalake_path = Path('/app/datalake')
 
     def tokenize_text(self, text: str) -> Set[str]:
@@ -17,16 +17,34 @@ class Indexer:
 
     def is_book_indexed(self, book_id: str) -> bool:
         '''check if book is already indexed'''
-        return self.redis_client.exists(f'book:{book_id}:metadata') > 0
+        return self.backend.is_book_indexed(book_id)
 
     def get_indexed_books(self) -> Set[str]:
         '''get all indexed books IDs'''
-        pattern = 'book:*:metadata'
-        keys = self.redis_client.keys(pattern)
-        return {key.split(':')[1] for key in keys}
+        return self.backend.get_indexed_books()
+
+    def extract_metadata_from_header(self, header_content: str) -> Dict:
+        '''extract metadata from header using regex'''
+        import re
+
+        metadata = {'title': '', 'author': '', 'language': 'en'}
+
+        title_match = re.search(r'Title:\s*(.+)', header_content, re.IGNORECASE)
+        if title_match:
+            metadata['title'] = title_match.group(1).strip()
+
+        author_match = re.search(r'Author:\s*(.+)', header_content, re.IGNORECASE)
+        if author_match:
+            metadata['author'] = author_match.group(1).strip()
+
+        lang_match = re.search(r'Language:\s*(.+)', header_content, re.IGNORECASE)
+        if lang_match:
+            metadata['language'] = lang_match.group(1).strip()
+
+        return metadata
 
     def process_book(self, book_id: str) -> Dict:
-        '''pricess single book and return indexing data'''
+        '''process single book and return indexing data'''
         header_file = self.datalake_path / f'header_{book_id}.txt'
         body_file = self.datalake_path / f'body_{book_id}.txt'
 
@@ -39,39 +57,36 @@ class Indexer:
         with open(body_file, 'r', encoding='utf-8') as f:
             body_content = f.read()
 
-        all_words = self.tokenize_text(header_content + ' ' + body_content)
-        title_words = self.tokenize_text(header_content)
+        metadata = self.extract_metadata_from_header(header_content)
+
+        all_words = self.tokenize_text(body_content)
+        title_words = self.tokenize_text(metadata['title'])
 
         return {
             'book_id': book_id,
-            'title': header_content,
+            'title': metadata['title'],
+            'author': metadata['author'],
+            'language': metadata['language'],
             'all_words': all_words,
             'title_words': title_words,
             'word_count': len(body_content.split())
         }
 
     def index_book(self, book_data: Dict):
-        '''index a single book, puts to redis - inverted index creation'''
-        pipe = self.redis_client.pipeline()
+        '''index a single book using backend interface'''
         book_id = book_data['book_id']
 
-        pipe.hset(f'book:{book_id}:metadata', mapping={
+        metadata = {
             'title': book_data['title'],
-            'word_count': str(book_data['word_count']),
-            'unique_words': str(len(book_data['all_words'])),
-            'indexed_at': str(int(time.time()))
-        })
+            'author': book_data.get('author', ''),
+            'language': book_data.get('language', ''),
+            'word_count': book_data['word_count'],
+            'unique_words': len(book_data['all_words'])
+        }
+        self.backend.store_book_metadata(book_id, metadata)
 
         for word in book_data['all_words']:
-            pipe.sadd(f'word:{word}', book_id)
-
-        for word in book_data['title_words']:
-            pipe.sadd(f'title_word:{word}', book_id)
-
-        pipe.incr('stats:total_books')
-        pipe.sadd('stats:all_words', *book_data['all_words'])
-
-        pipe.execute()
+            self.backend.add_word_to_index(word, book_id)
 
     def index_all_books(self, force_reindex: bool = False):
         '''index all books, reindex if specified'''
@@ -111,11 +126,11 @@ class Indexer:
         if not words:
             return []
 
-        book_sets = [self.redis_client.smembers(f'word:{word}') for word in words]
+        book_sets = [self.backend.search_word(word) for word in words]
         if not book_sets:
             return []
 
-        result_books = set(book_sets[0])
+        result_books = book_sets[0]
         for book_set in book_sets[1:]:
             result_books &= book_set
 
@@ -123,22 +138,17 @@ class Indexer:
 
     def get_book_info(self, book_id: str) -> Dict:
         '''gives book metadata'''
-        return self.redis_client.hgetall(f'book:{book_id}:metadata')
+        return self.backend.get_book_metadata(book_id)
 
     def get_stats(self) -> Dict:
         '''gives indexing statistics'''
-        return {
-            'total_books': self.redis_client.get('stats:total_books') or 0,
-            'unique_words': self.redis_client.scard('stats:all_words'),
-            'indexed_books': len(self.get_indexed_books())
-        }
+        return self.backend.get_stats()
 
-    # to be moved elsewhere
-    def test_redis_connection(self):
-        try:
-            self.redis_client.ping()
-            print(f'Redis connection: OK')
+    def test_backend_connection(self):
+        '''test backend connection'''
+        if self.backend.test_connection():
+            print('Backend connection: OK')
             return True
-        except:
-            print('Redis connection: FAILED')
+        else:
+            print('Backend connection: FAILED')
             return False

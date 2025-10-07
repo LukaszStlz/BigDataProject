@@ -9,18 +9,70 @@ services:
     command: redis-server --appendonly yes --dir /data
     # restart: unless-stopped
 
+  db:
+    image: postgres:15
+    container_name: postgres_db
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: datamart_db
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "user", "-d", "datamart_db"]
+      interval: 1s
+      retries: 5
+      start_period: 0s
+      timeout: 1s
+    networks:
+      - default
+
+  tests:
+    build: ./data_layer
+    depends_on:
+      - redis
+      - db
+    volumes:
+      - ./tests:/app/tests
+      - ./data_layer/datalake:/app/datalake
+    command: pytest tests/ -v --tb=short
+    networks:
+      - default
+    profiles:
+      - ci
+
   app:
     build: ./data_layer
     depends_on:
       - redis
+      - db
     volumes:
-      - ./datalake:/app/datalake
+      - ./data_layer/datalake:/app/datalake
+    environment:
+      - BACKEND_TYPE=${BACKEND_TYPE:-postgres}
+    command: python pipeline.py
     # restart: unless-stopped
     networks:
       - default
 
+  benchmark:
+    build: ./data_layer
+    depends_on:
+      - redis
+      - db
+    volumes:
+      - ./benchmarks:/app/benchmarks
+      - ./data_layer/datalake:/app/datalake
+    command: pytest benchmarks/ --benchmark-only -v --benchmark-json=/app/benchmark_results.json
+    networks:
+      - default
+    profiles:
+      - benchmark
+
 volumes:
   redis_data:
+    driver: local
+  db-data:
     driver: local
 
 networks:
