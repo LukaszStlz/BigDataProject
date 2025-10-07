@@ -4,6 +4,10 @@ services:
     container_name: redis
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --dir /data
+    # restart: unless-stopped
 
   app:
     build: ./data_layer
@@ -11,3 +15,14 @@ services:
       - redis
     volumes:
       - ./datalake:/app/datalake
+    # restart: unless-stopped
+    networks:
+      - default
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  default:
+    driver: bridge
